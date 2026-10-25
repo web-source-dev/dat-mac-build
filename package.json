@@ -1,0 +1,111 @@
+{
+  "name": "datdesk-mac",
+  "version": "1.5.6",
+  "description": "Dat Desk for macOS",
+  "main": "out/main/index.js",
+  "author": "Dat Desk",
+  "scripts": {
+    "dev": "npm run build:all && electron .",
+    "start": "electron .",
+    "build:all": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build",
+    "build:main": "node scripts/build.js",
+    "build:mac": "npm run build:all && electron-builder --mac",
+    "build:mac:unpacked": "npm run build:all && electron-builder --mac --dir"
+  },
+  "build": {
+    "appId": "com.datdesk.mac",
+    "productName": "Dat Desk",
+    "copyright": "Copyright © 2026 Dat Desk. All rights reserved.",
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "enableCookieEncryption": true
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "resources/**/*",
+      ".env"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://datdesk.apexskillzone.com/update/feed?app=datdesk-mac"
+      }
+    ],
+    "mac": {
+      "icon": "resources/icon512.png",
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "DatDesk-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "Dat Desk ${version}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 200
+        },
+        {
+          "x": 410,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^3.0.0",
+    "adm-zip": "^0.5.18",
+    "axios": "^1.7.7",
+    "dotenv": "^17.2.3",
+    "electron-store": "^10.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.23",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.4.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "vite": "^5.1.4"
+  }
+}

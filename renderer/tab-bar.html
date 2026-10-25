@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dat Desk</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --blue: #0b6bcb;
+      --blue-dark: #084f96;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    /*
+      Critical for Electron BrowserView: the window webContents must NOT
+      intercept mouse events over the DAT view. Only chrome should receive
+      pointer events.
+    */
+    html, body {
+      height: 100%;
+      width: 100%;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      overflow: hidden;
+      background: transparent;
+      color: var(--ink);
+      -webkit-app-region: no-drag;
+      user-select: none;
+      pointer-events: none;
+    }
+    #shell {
+      height: 100%;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      pointer-events: none;
+      background: transparent;
+    }
+    #bar {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+      padding: 0 6px;
+      flex-shrink: 0;
+      z-index: 20;
+      pointer-events: auto;
+      -webkit-app-region: drag;
+    }
+    #tabs {
+      display: flex;
+      flex: 0 1 auto;
+      overflow-x: auto;
+      height: 100%;
+      align-items: center;
+      gap: 2px;
+      max-width: calc(100% - 140px);
+    }
+    .chrome-tab {
+      -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 110px;
+      max-width: 220px;
+      height: 30px;
+      padding: 0 10px;
+      background: #e2e8f0;
+      color: #334155;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .chrome-tab.active { background: #fff; color: #0f172a; }
+    .chrome-tab-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tab-close, #new-tab, .win-btn {
+      -webkit-app-region: no-drag;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: #64748b;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .tab-close:hover, #new-tab:hover, .win-btn:hover { background: #cbd5e1; color: #0f172a; }
+    #new-tab {
+      width: 28px;
+      margin-left: 10px;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    #new-tab:disabled { opacity: 0.35; cursor: not-allowed; }
+    #spacer { flex: 1; height: 100%; -webkit-app-region: drag; }
+    #win { display: flex; gap: 2px; margin-left: 8px; flex-shrink: 0; }
+    /* Shown while the DAT session is prepared; the first DAT tab covers it. */
+    #loading {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: var(--bg);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 3px solid rgba(11, 107, 203, 0.2);
+      border-top-color: var(--blue);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+  </style>
+</head>
+<body>
+  <div id="shell">
+    <div id="bar">
+      <div id="tabs"></div>
+      <button id="new-tab" title="New tab">+</button>
+      <div id="spacer"></div>
+      <div id="win">
+        <button class="win-btn" id="min">─</button>
+        <button class="win-btn" id="max">□</button>
+        <button class="win-btn" id="close" title="Close DAT">×</button>
+      </div>
+    </div>
+    <div id="loading" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <div id="loading-text">Opening DAT…</div>
+    </div>
+  </div>
+
+  <script>
+    const tabsEl = document.getElementById('tabs');
+    const newBtn = document.getElementById('new-tab');
+    let chromeState = { tabs: [], permissions: { canCreateNewTab: false } };
+
+    function renderChrome() {
+      tabsEl.innerHTML = '';
+      chromeState.tabs.forEach((tab) => {
+        const el = document.createElement('div');
+        el.className = 'chrome-tab' + (tab.active ? ' active' : '');
+        el.innerHTML = '<span class="chrome-tab-title"></span><button class="tab-close" title="Close">×</button>';
+        el.querySelector('.chrome-tab-title').textContent =
+          (tab.isLoading ? '… ' : '') + (tab.title || 'Tab');
+        el.addEventListener('click', (e) => {
+          if (e.target.classList.contains('tab-close')) return;
+          window.dslbSession.switchTab(tab.id);
+        });
+        el.querySelector('.tab-close').addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.dslbSession.closeTab(tab.id);
+        });
+        tabsEl.appendChild(el);
+      });
+      newBtn.disabled = !chromeState.permissions?.canCreateNewTab;
+      const maxTabs = Number(chromeState.permissions?.maxTabs) || 1;
+      newBtn.style.display = maxTabs > 1 || chromeState.permissions?.canCreateNewTab ? '' : 'none';
+      newBtn.title = chromeState.permissions?.canCreateNewTab
+        ? 'New tab'
+        : chromeState.permissions?.reason || 'Maximum tabs reached';
+    }
+
+    renderChrome(); // initial state: no tabs, "+" hidden while DAT is still opening
+    newBtn.addEventListener('click', () => window.dslbSession.newTab());
+    document.getElementById('min').addEventListener('click', () => window.dslbSession.minimizeWindow());
+    document.getElementById('max').addEventListener('click', () => window.dslbSession.maximizeWindow());
+    document.getElementById('close').addEventListener('click', () => window.dslbSession.closeWindow());
+
+    if (window.dslbSession?.onTabsUpdate) {
+      window.dslbSession.onTabsUpdate((data) => {
+        chromeState = data || chromeState;
+        renderChrome();
+        if (chromeState.tabs.length) document.getElementById('loading').classList.add('hidden');
+      });
+    }
+    if (window.dslbSession?.onLoading) {
+      window.dslbSession.onLoading((data) => {
+        if (data?.message) document.getElementById('loading-text').textContent = data.message;
+      });
+    }
+  </script>
+</body>
+</html>

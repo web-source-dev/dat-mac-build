@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>Connection problem</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --blue: #0b6bcb;
+      --blue-dark: #084f96;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card {
+      width: 100%;
+      max-width: 460px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    p { font-size: 14px; line-height: 1.55; color: var(--muted); }
+    .code { margin-top: 14px; font-size: 12px; color: var(--muted); font-family: Consolas, monospace; }
+    a.retry {
+      display: inline-block;
+      margin-top: 20px;
+      background: var(--blue);
+      color: #fff;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 18px;
+      border-radius: 8px;
+    }
+    a.retry:hover { background: var(--blue-dark); }
+    a.retry:focus-visible { outline: 3px solid rgba(11, 107, 203, 0.35); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <main class="card" role="alert">
+    <h1 id="title">DAT could not load</h1>
+    <p id="message">Something went wrong while loading DAT.</p>
+    <a class="retry" id="retry" href="https://one.dat.com/search-loads">Retry</a>
+    <div class="code" id="code"></div>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code') || '';
+      const url = params.get('url') || '';
+      const proxy = params.get('proxy') === '1';
+
+      const messages = [
+        [/^ERR_(PROXY_|NO_SUPPORTED_PROXIES|MANDATORY_PROXY)/, 'Proxy not working',
+          'The proxy assigned to your account is not working (it may be expired or disabled by the provider). Please contact an administrator.'],
+        // Through a proxy, any unreachable site surfaces as a tunnel failure — not always the proxy's fault.
+        [/^ERR_TUNNEL_CONNECTION_FAILED$/, 'Page could not be reached',
+          'This page could not be reached through your connection. DAT may be temporarily down, or the proxy may have stopped working. Click Retry, and contact an administrator if it keeps happening.'],
+        [/^ERR_(TIMED_OUT|CONNECTION_TIMED_OUT|LOAD_TIMEOUT)$/, 'DAT is taking too long',
+          proxy
+            ? 'DAT did not load in time. The proxy may be slow or down. Click Retry, and contact an administrator if it keeps happening.'
+            : 'DAT did not load in time. Check your internet / VPN connection and click Retry.'],
+        [/^ERR_NETWORK_CHANGED$/, 'Network changed',
+          'Your network changed (VPN connected or disconnected). Click Retry.'],
+        [/^ERR_(INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE)$/, 'No internet connection',
+          'Check your network / VPN connection and click Retry.'],
+        [/^RENDERER_/, 'DAT stopped working',
+          'The DAT page crashed or stopped responding. Click Retry to load it again.'],
+        [/^DAT_SESSION_WAITING$/, 'Waiting for a DAT session',
+          'The DAT login has ended. Keep this window open: DAT reloads by itself as soon as a new session is available.']
+      ];
+
+      const match = messages.find(([re]) => re.test(code));
+      if (match) {
+        document.getElementById('title').textContent = match[1];
+        document.getElementById('message').textContent = match[2];
+      }
+      if (code) document.getElementById('code').textContent = code;
+      if (/^https?:\/\//i.test(url)) {
+        document.getElementById('retry').href = url;
+      }
+
+      // The app swaps the session in and reloads the tab itself — no manual retry.
+      if (code === 'DAT_SESSION_WAITING') {
+        document.getElementById('retry').hidden = true;
+        return;
+      }
+
+      // Connection problems fix themselves when the network comes back: retry
+      // automatically (on reconnect, and every 20 s while online) so DAT never needs reopening.
+      if (!/^https?:\/\//i.test(url)) return;
+      const RETRY_S = 20;
+      let left = RETRY_S;
+      const status = document.createElement('p');
+      status.className = 'code';
+      document.querySelector('main').appendChild(status);
+      const retry = () => window.location.replace(url);
+      window.addEventListener('online', () => setTimeout(retry, 1500));
+      setInterval(() => {
+        if (!navigator.onLine) {
+          left = RETRY_S;
+          status.textContent = 'Offline — DAT reloads by itself when the internet is back.';
+          return;
+        }
+        left -= 1;
+        status.textContent = `Retrying automatically in ${left}s…`;
+        if (left <= 0) retry();
+      }, 1000);
+    })();
+  </script>
+</body>
+</html>

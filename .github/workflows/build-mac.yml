@@ -1,0 +1,53 @@
+name: Build Dat Desk for macOS
+
+# Run it from GitHub: Actions → "Build Dat Desk for macOS" → Run workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # .env is not in git (it holds the TrackingEye key). Paste the whole .env into the
+      # repository secret MAC_ENV_FILE. Without it the app uses its built-in server URLs.
+      - name: Write .env
+        env:
+          MAC_ENV_FILE: ${{ secrets.MAC_ENV_FILE }}
+        run: |
+          if [ -n "$MAC_ENV_FILE" ]; then
+            printf '%s\n' "$MAC_ENV_FILE" > .env
+          else
+            printf '%s\n' \
+              'API_MAIN_URL=https://datdeskbackup.apexskillzone.com' \
+              'API_BASE_URL=https://datdeskbackup.apexskillzone.com' \
+              'API_BACKUP_URL=https://datdeskbackup.apexskillzone.com' > .env
+          fi
+
+      - run: npm ci
+
+      # Ad-hoc signed (no Apple Developer ID): users open it once with right-click → Open.
+      - name: Build
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:all && npx electron-builder --mac --publish never
+
+      # The backend feed reads updates/datdesk-mac/darwin/latest.yml.
+      - name: Prepare files for the update server
+        run: |
+          mkdir -p upload/darwin
+          cp dist/*.dmg dist/*.zip upload/darwin/
+          cp dist/*.blockmap upload/darwin/ 2>/dev/null || true
+          cp dist/latest-mac.yml upload/darwin/latest.yml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dat-desk-mac
+          path: upload/darwin
+          retention-days: 14

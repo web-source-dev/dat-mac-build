@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Live view</title>
+</head>
+<body>
+<script>
+  const state = { pc: null, streams: [] };
+
+  function waitIce(pc) {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        if (pc.iceGatheringState !== 'complete') return;
+        pc.removeEventListener('icegatheringstatechange', done);
+        resolve();
+      };
+      pc.addEventListener('icegatheringstatechange', done);
+      setTimeout(resolve, 2000);
+    });
+  }
+
+  function stopTracks() {
+    state.streams.forEach((stream) => {
+      stream.getTracks().forEach((track) => track.stop());
+    });
+    state.streams = [];
+  }
+
+  function stop() {
+    if (state.pc) {
+      state.pc.getSenders().forEach((sender) => {
+        if (sender.track) sender.track.stop();
+      });
+      state.pc.close();
+      state.pc = null;
+    }
+    stopTracks();
+  }
+
+  async function tune(pc) {
+    for (const sender of pc.getSenders()) {
+      if (!sender.track || sender.track.kind !== 'video') continue;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.degradationPreference = 'balanced';
+      params.encodings[0].maxFramerate = 30;
+      params.encodings[0].maxBitrate = 5000000;
+      params.encodings[0].scaleResolutionDownBy = 1;
+      try {
+        await sender.setParameters(params);
+      } catch (err) {
+        // The browser applies the getDisplayMedia frame rate when this is refused.
+      }
+    }
+  }
+
+  async function openScreen(screenInfo) {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: 30, max: 30 },
+        width: { ideal: screenInfo.width || 1920 },
+        height: { ideal: screenInfo.height || 1080 }
+      },
+      audio: false
+    });
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((item) => item.stop());
+      throw new Error('Could not open the screen.');
+    }
+    track.contentHint = 'detail';
+    try {
+      await track.applyConstraints({ frameRate: { ideal: 30, max: 30 } });
+    } catch (err) {
+      // The capture still uses the frame rate requested above.
+    }
+    return { stream, track };
+  }
+
+  async function begin(payload) {
+    stop();
+    const screenInfo = payload?.screen || { width: 1920, height: 1080 };
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    state.pc = pc;
+    try {
+      const opened = await openScreen(screenInfo);
+      state.streams.push(opened.stream);
+      pc.addTrack(opened.track, opened.stream);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitIce(pc);
+      window.liveView.sendOffer(pc.localDescription.sdp);
+    } catch (err) {
+      window.liveView.sendFailed(err && err.message ? err.message : 'Could not start the live view.');
+      stop();
+    }
+  }
+
+  async function switchScreen(screenInfo) {
+    if (!state.pc) return;
+    const opened = await openScreen(screenInfo || {});
+    try {
+      const sender = state.pc.getSenders().find((item) => item.track && item.track.kind === 'video')
+        || state.pc.getSenders()[0];
+      if (!sender) {
+        opened.track.stop();
+        return;
+      }
+      const previous = sender.track;
+      await sender.replaceTrack(opened.track);
+      if (previous && previous !== opened.track) previous.stop();
+      stopTracks();
+      state.streams = [opened.stream];
+      await tune(state.pc);
+    } catch (err) {
+      opened.track.stop();
+      throw err;
+    }
+  }
+
+  window.liveView.onBegin(begin);
+  window.liveView.onStop(stop);
+  window.liveView.onSwitch(async (screenInfo) => {
+    try {
+      await switchScreen(screenInfo);
+    } catch (err) {
+      // Keep the screen that is already playing if the switch does not open.
+    }
+  });
+  window.liveView.onAnswer(async (sdp) => {
+    if (!state.pc || !sdp) return;
+    try {
+      await state.pc.setRemoteDescription({ type: 'answer', sdp });
+      await tune(state.pc);
+    } catch (err) {
+      window.liveView.sendFailed(err && err.message ? err.message : 'Could not connect the live view.');
+    }
+  });
+</script>
+</body>
+</html>
