@@ -57,7 +57,7 @@
       height: 100%;
       align-items: center;
       gap: 2px;
-      max-width: calc(100% - 140px);
+      max-width: calc(100% - 430px);
     }
     .chrome-tab {
       -webkit-app-region: no-drag;
@@ -80,7 +80,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .tab-close, #new-tab, .win-btn {
+    .tab-close, #new-tab, .win-btn, .zoom-btn {
       -webkit-app-region: no-drag;
       border: none;
       cursor: pointer;
@@ -92,7 +92,7 @@
       font-size: 14px;
       line-height: 1;
     }
-    .tab-close:hover, #new-tab:hover, .win-btn:hover { background: #cbd5e1; color: #0f172a; }
+    .tab-close:hover, #new-tab:hover, .win-btn:hover, .zoom-btn:hover { background: #cbd5e1; color: #0f172a; }
     #new-tab {
       width: 28px;
       margin-left: 10px;
@@ -101,6 +101,82 @@
     }
     #new-tab:disabled { opacity: 0.35; cursor: not-allowed; }
     #spacer { flex: 1; height: 100%; -webkit-app-region: drag; }
+    #zoom {
+      -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: 8px;
+      padding: 0 4px;
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+    #zoom[hidden] { display: none; }
+    #zoom-reset {
+      width: 46px;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+    /* Connection health (● 180 ms) + Reset, next to the zoom group. */
+    #net {
+      -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 6px;
+      border-right: 1px solid var(--line);
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    #net[hidden] { display: none; }
+    #net-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 74px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      cursor: default;
+    }
+    #net-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #cbd5e1;
+      flex-shrink: 0;
+    }
+    #net[data-level="good"] #net-dot { background: #16a34a; }
+    #net[data-level="ok"] #net-dot { background: #eab308; }
+    #net[data-level="slow"] #net-dot,
+    #net[data-level="stuck"] #net-dot,
+    #net[data-level="down"] #net-dot { background: #dc2626; }
+    #net[data-level="slow"] #net-ms,
+    #net[data-level="stuck"] #net-ms,
+    #net[data-level="down"] #net-ms { color: #b91c1c; font-weight: 600; }
+    #net-reset {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: #334155;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #net-reset:hover:not(:disabled) { background: #e2e8f0; color: #0f172a; }
+    #net-reset:disabled { opacity: 0.6; cursor: progress; }
+    #net[data-level="stuck"] #net-reset,
+    #net[data-level="down"] #net-reset {
+      border-color: #dc2626;
+      color: #b91c1c;
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { background: #fee2e2; } }
+    @media (prefers-reduced-motion: reduce) {
+      #net[data-level="stuck"] #net-reset, #net[data-level="down"] #net-reset { animation: none; background: #fee2e2; }
+    }
     #win { display: flex; gap: 2px; margin-left: 8px; flex-shrink: 0; }
     /* Shown while the DAT session is prepared; the first DAT tab covers it. */
     #loading {
@@ -133,6 +209,17 @@
       <div id="tabs"></div>
       <button id="new-tab" title="New tab">+</button>
       <div id="spacer"></div>
+      <div id="zoom" role="group" aria-label="Page zoom" hidden>
+        <button class="zoom-btn" id="zoom-out" title="Zoom out (Ctrl -)" aria-label="Zoom out">−</button>
+        <button class="zoom-btn" id="zoom-reset" title="Reset to 100% (Ctrl 0)" aria-label="Reset zoom">100%</button>
+        <button class="zoom-btn" id="zoom-in" title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+      </div>
+      <div id="net" data-level="unknown" hidden>
+        <span id="net-status" role="status" aria-live="polite" title="Connection speed to DAT">
+          <span id="net-dot" aria-hidden="true"></span><span id="net-ms">Checking…</span>
+        </span>
+        <button id="net-reset" title="Fix a slow or stuck DAT: fresh connection and reload. DAT stays open and signed in.">⟳ Reset</button>
+      </div>
       <div id="win">
         <button class="win-btn" id="min">─</button>
         <button class="win-btn" id="max">□</button>
@@ -181,12 +268,76 @@
     document.getElementById('min').addEventListener('click', () => window.dslbSession.minimizeWindow());
     document.getElementById('max').addEventListener('click', () => window.dslbSession.maximizeWindow());
     document.getElementById('close').addEventListener('click', () => window.dslbSession.closeWindow());
+    document.getElementById('zoom-out').addEventListener('click', () => window.dslbSession.zoom(-1));
+    document.getElementById('zoom-in').addEventListener('click', () => window.dslbSession.zoom(1));
+    document.getElementById('zoom-reset').addEventListener('click', () => window.dslbSession.zoom(0));
 
     if (window.dslbSession?.onTabsUpdate) {
       window.dslbSession.onTabsUpdate((data) => {
         chromeState = data || chromeState;
         renderChrome();
+        const zoomEl = document.getElementById('zoom');
+        zoomEl.hidden = !chromeState.tabs.length;
+        if (chromeState.zoom) document.getElementById('zoom-reset').textContent = chromeState.zoom + '%';
         if (chromeState.tabs.length) document.getElementById('loading').classList.add('hidden');
+      });
+    }
+    const netEl = document.getElementById('net');
+    const netMs = document.getElementById('net-ms');
+    const netStatus = document.getElementById('net-status');
+    const netReset = document.getElementById('net-reset');
+    const NET_WORDS = {
+      good: 'Stable connection',
+      ok: 'A bit slow',
+      slow: 'Slow connection',
+      stuck: 'Connection stuck — press Reset',
+      down: 'No answer from DAT — press Reset',
+      resetting: 'Resetting…',
+      unknown: 'Measuring…'
+    };
+    // Short word in the toolbar; the number is smoothed over the last minute of DAT's own traffic.
+    const NET_LABELS = { good: 'Stable', ok: 'OK', slow: 'Slow' };
+    let netNotice = '';
+    let netNoticeTimer = null;
+
+    function renderHealth(h) {
+      const level = h?.level || 'unknown';
+      netEl.dataset.level = level;
+      if (level === 'resetting') netMs.textContent = 'Resetting…';
+      else if (level === 'stuck') netMs.textContent = 'Stuck';
+      else if (level === 'down') netMs.textContent = 'No answer';
+      else if (Number.isFinite(h?.ms)) netMs.textContent = (NET_LABELS[level] ? NET_LABELS[level] + ' · ' : '') + h.ms + ' ms';
+      else netMs.textContent = 'Checking…';
+      netReset.disabled = level === 'resetting';
+      netReset.textContent = level === 'resetting' ? 'Resetting…' : '⟳ Reset';
+      const lines = [NET_WORDS[level] || ''];
+      (h?.hosts || []).forEach((x) => lines.push(x.host + ': ' + (x.ms < 0 ? 'no answer' : '~' + x.ms + ' ms')));
+      if (h?.waiting) lines.push(h.waiting + ' request(s) waiting');
+      if (h?.memoryMb) lines.push('DAT memory: ' + h.memoryMb + ' MB');
+      if (netNotice) lines.push(netNotice);
+      netStatus.title = lines.filter(Boolean).join('\n');
+    }
+
+    netReset.addEventListener('click', async () => {
+      renderHealth({ level: 'resetting' });
+      let result = null;
+      try {
+        result = await window.dslbSession.resetConnection();
+      } catch (e) {
+        result = { ok: false, message: 'Reset failed.' };
+      }
+      netNotice = result?.message || (result?.ok ? 'Reset done.' : '');
+      clearTimeout(netNoticeTimer);
+      netNoticeTimer = setTimeout(() => { netNotice = ''; }, 60000);
+      if (result && result.ok === false && result.message && !result.busy) netMs.textContent = 'Not fixed';
+    });
+
+    if (window.dslbSession?.onHealth) {
+      window.dslbSession.onHealth(renderHealth);
+    }
+    if (window.dslbSession?.onTabsUpdate) {
+      window.dslbSession.onTabsUpdate((data) => {
+        netEl.hidden = !(data?.tabs || []).length;
       });
     }
     if (window.dslbSession?.onLoading) {

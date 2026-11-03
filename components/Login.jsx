@@ -1,6 +1,5 @@
 import React, { useRef, useState } from 'react';
 import logo from '../assets/dat-logo.svg';
-import ScreenReport from './ScreenReport';
 
 export default function Login({ onLoggedIn, setMessage }) {
   const [email, setEmail] = useState(localStorage.getItem('email') || '');
@@ -100,7 +99,6 @@ export default function Login({ onLoggedIn, setMessage }) {
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
-      <ScreenReport variant="block" email={email} setMessage={setMessage} />
       </div>
     </div>
   );

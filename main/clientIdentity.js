@@ -4,7 +4,7 @@
  * Who is calling the backend.
  *
  * 1. A hardware ID for this physical PC (Windows MachineGuid + motherboard/BIOS/system
- *    serials + CPU), so the backend can tell two real computers apart even when they share
+ *    serials + CPU; on a Mac the platform UUID + serial number + CPU), so the backend can tell two real computers apart even when they share
  *    a PC name, and see one account used on two PCs at once.
  * 2. A signature on every API request, so the backend can tell this app from a script or
  *    Postman replaying the user's token.
@@ -120,6 +120,29 @@ async function readWindowsSerials() {
   }
 }
 
+/**
+ * Mac hardware from the IOPlatformExpertDevice registry entry (no permission prompt needed):
+ * the platform UUID, the serial number and the model (e.g. "MacBookPro18,3"). Macs have no
+ * separate BIOS/board serials or a disk serial readable without admin rights.
+ */
+async function readMacSerials() {
+  if (process.platform !== 'darwin') return {};
+  const out = await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], 5000);
+  const field = (re) => out.match(re)?.[1] || '';
+  return {
+    systemUuid: cleanSerial(field(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)),
+    boardSerial: cleanSerial(field(/"IOPlatformSerialNumber"\s*=\s*"([^"]+)"/)),
+    maker: field(/"manufacturer"\s*=\s*<?"([^"]+)"/).trim().slice(0, 60) || 'Apple Inc.',
+    model: field(/"model"\s*=\s*<?"([^"]+)"/).trim().slice(0, 60)
+  };
+}
+
+/** Board/system serials for this OS (Windows WMI, Mac registry); {} elsewhere. */
+function readHardwareSerials() {
+  if (process.platform === 'darwin') return readMacSerials();
+  return readWindowsSerials();
+}
+
 function macAddresses() {
   const macs = new Set();
   for (const list of Object.values(os.networkInterfaces() || {})) {
@@ -216,10 +239,18 @@ async function collect() {
   // Same Windows install as last time: reuse the stored ID so it never flips between runs
   // (e.g. when PowerShell is slow or blocked on one start but not the next).
   if (cached && (!guidTag || cached.machineId === guidTag)) {
+    // Macs set up before the serial/model were read: add them, keeping the same hwId.
+    if (process.platform === 'darwin' && !cached.model) {
+      const serials = await readMacSerials();
+      if (serials.model || serials.boardSerial) {
+        Object.assign(cached, serials);
+        writeCache(cached);
+      }
+    }
     recheckBoard(guid, guidTag, cached);
     return { ...cached, ...liveDetails() };
   }
-  return build(guid, guidTag, await readWindowsSerials());
+  return build(guid, guidTag, await readHardwareSerials());
 }
 
 function build(guid, guidTag, serials) {
@@ -245,7 +276,7 @@ function build(guid, guidTag, serials) {
  * serial disagrees — an empty read (PowerShell blocked/slow) never changes the ID.
  */
 function recheckBoard(guid, guidTag, cached) {
-  readWindowsSerials()
+  readHardwareSerials()
     .then((serials) => {
       const differs = ['systemUuid', 'boardSerial', 'biosSerial'].some(
         (key) => serials[key] && cached[key] && serials[key] !== cached[key]

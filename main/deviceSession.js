@@ -172,7 +172,13 @@ async function signRequest(config) {
   try {
     dev = await deviceKey.ready();
   } catch {
-    return config;
+    // One more try (ready() starts over after a failure, then falls back to the app's own key):
+    // an unsigned request is refused by the server, so it is worth the wait.
+    try {
+      dev = await deviceKey.ready();
+    } catch {
+      return config;
+    }
   }
   config.headers = config.headers || {};
   const body = bodyBytes(config);

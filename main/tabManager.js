@@ -8,6 +8,7 @@ const { isGoogleOAuthUrl, openGoogleOAuthPopup } = require('./googleOAuthPopup')
 const { chromeUserAgent } = require('./userAgent');
 const { isReceivingData, forgetActivity } = require('./trackerBlock');
 const { buildInjection } = require('./datPageInit');
+const { loadZoom, saveZoom, stepZoom, clampZoom } = require('./datZoom');
 
 /** A tab that is still loading after this long gets stopped and shows the error page… */
 const TAB_LOAD_TIMEOUT_MS = 45000;
@@ -66,6 +67,44 @@ class TabManager {
     this._lastTabBarPayload = '';
     /** Main-world injection source (fingerprint + storage seed) applied to every DAT tab. */
     this._injection = null;
+    /** Page zoom for every DAT tab (toolbar − / + , Ctrl +/-/0, Ctrl+wheel); saved per PC. */
+    this.zoomFactor = loadZoom();
+    this._onBarKeys = (event, input) => this.handleZoomKeys(event, input);
+    this.window.webContents.on('before-input-event', this._onBarKeys);
+  }
+
+  /** Apply the current zoom to one tab (Chromium resets zoom when the page's origin changes). */
+  applyZoom(webContents) {
+    if (!webContents || webContents.isDestroyed()) return;
+    if (Math.abs(webContents.getZoomFactor() - this.zoomFactor) > 0.001) {
+      webContents.setZoomFactor(this.zoomFactor);
+    }
+  }
+
+  setZoom(factor) {
+    this.zoomFactor = clampZoom(factor);
+    saveZoom(this.zoomFactor);
+    this.tabs.forEach((t) => this.applyZoom(t.view?.webContents));
+    this.updateTabBar();
+    return this.zoomFactor;
+  }
+
+  /** direction: 1 zoom in, -1 zoom out, 0 reset to 100%. */
+  zoom(direction) {
+    return this.setZoom(direction ? stepZoom(this.zoomFactor, direction) : 1);
+  }
+
+  /** Ctrl + = / - / 0 (numpad too) in a DAT tab or on the tab bar. */
+  handleZoomKeys(event, input) {
+    if (input.type !== 'keyDown' || !(input.control || input.meta) || input.alt) return;
+    const key = input.key;
+    let dir = null;
+    if (key === '=' || key === '+' || input.code === 'NumpadAdd') dir = 1;
+    else if (key === '-' || key === '_' || input.code === 'NumpadSubtract') dir = -1;
+    else if (key === '0' || input.code === 'Numpad0') dir = 0;
+    if (dir === null) return;
+    event.preventDefault();
+    this.zoom(dir);
   }
 
   /**
@@ -335,6 +374,15 @@ class TabManager {
     this.window.contentView.addChildView(tabView);
 
     tabView.webContents.setUserAgent(chromeUserAgent());
+    tabView.webContents.on('before-input-event', (event, input) => this.handleZoomKeys(event, input));
+    // Ctrl+wheel: one notch can report more than once, so take one step per 150 ms.
+    tabView.webContents.on('zoom-changed', (_e, dir) => {
+      const now = Date.now();
+      if (now - (this._lastWheelZoomAt || 0) < 150) return;
+      this._lastWheelZoomAt = now;
+      this.zoom(dir === 'in' ? 1 : -1);
+    });
+    tabView.webContents.on('did-navigate', () => this.applyZoom(tabView.webContents));
     // Pin the account fingerprint + seed storage in the page's MAIN world at document-start
     // via CDP (bypasses CSP). The first load waits on this so it applies to the first doc.
     const injectionReady = this.installInjection(tabView.webContents);
@@ -388,6 +436,7 @@ class TabManager {
     });
 
     tabView.webContents.on('did-finish-load', () => {
+      this.applyZoom(tabView.webContents);
       tabInfo.isLoading = false;
       tabInfo.isReady = true;
       tabInfo.url = tabView.webContents.getURL() || tabInfo.url;
@@ -691,7 +740,8 @@ class TabManager {
         currentTabCount: this.tabs.size,
         canCreateNewTab: canCreate.allowed,
         reason: canCreate.reason || null
-      }
+      },
+      zoom: Math.round(this.zoomFactor * 100)
     };
     // Skip IPC when nothing meaningful changed (DAT titles can churn)
     const signature = JSON.stringify(payload);
@@ -705,6 +755,9 @@ class TabManager {
   }
 
   destroy() {
+    if (!this.window.isDestroyed()) {
+      this.window.webContents.removeListener('before-input-event', this._onBarKeys);
+    }
     if (this._tabBarTimer) clearTimeout(this._tabBarTimer);
     this._tabBarTimer = null;
     Array.from(this.tabs.keys()).forEach((id) => this.closeTab(id));

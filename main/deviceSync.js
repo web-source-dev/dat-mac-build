@@ -37,6 +37,8 @@ async function beat() {
       datOpen: Boolean(state.datOpen),
       datVisible: Boolean(state.datVisible),
       cookieId: state.cookieId || null,
+      // DAT connection speed + health (datHealth.js), shown live in admin.
+      net: state.net || null,
       appVersion,
       platform
     });

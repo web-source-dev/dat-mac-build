@@ -27,12 +27,10 @@ const {
 } = require('./config');
 const { TabManager, isDatLoginUrl } = require('./tabManager');
 const {
-  sendScreenReport,
   startRemoteCapture,
   syncRemoteCapture,
   stopRemoteCapture
 } = require('./screenReport');
-const { startSuspicionWatch, stopSuspicionWatch } = require('./suspicionWatch');
 const {
   startActivityLog,
   reportActivity,
@@ -73,6 +71,7 @@ const {
 const { chromeUserAgent, setAccountUserAgent } = require('./userAgent');
 const { applySessionNetworkHooks, getBlockedCount } = require('./trackerBlock');
 const { startDatKeepAlive } = require('./datKeepAlive');
+const { startDatHealth } = require('./datHealth');
 
 let Store;
 try {
@@ -210,6 +209,14 @@ let datRecovery = null;
 let datRecoveredAt = 0;
 /** Stops the DAT connection keep-alive (set while a DAT window is open). */
 let stopDatKeepAlive = null;
+/** Connection health + Reset for the open DAT window (see datHealth.js). */
+let datHealth = null;
+let lastHealthBeatAt = 0;
+let lastHealthBeatBad = false;
+/** Proxy of the open DAT window: assigned to the account, in use, and its parsed form. */
+let currentAssignedProxy = '';
+let currentActiveProxy = '';
+let currentParsedProxy = null;
 /** A second DAT login redirect within this window of a recovery → give up. */
 const DAT_RECOVERY_WINDOW_MS = 2 * 60 * 1000;
 /** Recovery that failed only because the server was unreachable is retried this often… */
@@ -500,31 +507,12 @@ async function ensureReportDeviceId(store) {
   return next;
 }
 
-function captureAllowed(store) {
-  if (store.get('remoteCaptureSet') === true) return store.get('remoteCaptureAllowed') === true;
-  return true;
-}
-
-function liveAllowed(store) {
-  if (store.get('liveViewSet') === true) return store.get('liveViewAllowed') === true;
-  return true;
-}
-
-/** Remember who this Dat Desk belongs to. A different email starts with capture and live on. */
+/** Remember who this Dat Desk belongs to (shown in TrackingEye while signed out). */
 async function rememberReportEmail(email) {
   const next = String(email || '').trim().slice(0, 200);
-  if (!next) return false;
+  if (!next) return;
   const s = await getStore();
-  const previous = String(s.get('reportEmail') || '').trim();
-  const changed = Boolean(previous) && previous.toLowerCase() !== next.toLowerCase();
-  if (changed) {
-    s.set('remoteCaptureSet', false);
-    s.delete('remoteCaptureAllowed');
-    s.set('liveViewSet', false);
-    s.delete('liveViewAllowed');
-  }
   s.set('reportEmail', next);
-  return changed;
 }
 
 async function readReportProfile() {
@@ -541,8 +529,9 @@ async function readReportProfile() {
     email: loggedIn ? sessionEmail || remembered : remembered,
     userId: loggedIn ? String(claims.userId || claims.id || claims.sub || '').trim() : '',
     role: loggedIn ? String(claims.role || '').trim().toLowerCase() : '',
-    allowRemote: captureAllowed(s),
-    allowLive: liveAllowed(s)
+    // No screenshots or live view in the Mac app.
+    allowRemote: false,
+    allowLive: false
   };
 }
 
@@ -830,6 +819,7 @@ function currentPresenceState() {
       datOpen: true,
       // The account this device currently has open, so admins see users-per-cookie.
       cookieId: currentSessionStamp?.cookieId || null,
+      net: datHealthForPresence(),
       datVisible: (() => {
         try {
           return datWindow.isVisible() && !datWindow.isMinimized();
@@ -840,6 +830,21 @@ function currentPresenceState() {
     };
   }
   return { state: 'dashboard', datOpen: false, datVisible: false, cookieId: null };
+}
+
+/** The DAT connection numbers admin shows per user (null until the first measurement). */
+function datHealthForPresence() {
+  const h = datHealth?.snapshot();
+  if (!h?.at) return null;
+  return {
+    ms: h.ms,
+    level: h.level,
+    memoryMb: h.memoryMb,
+    autoFixes: h.autoFixes,
+    resets: h.resets,
+    lastResetAt: h.lastResetAt,
+    at: h.at
+  };
 }
 
 function startPresence() {
@@ -1526,6 +1531,7 @@ function normalizePermissions(permissions = {}) {
     webMultitabNumbers: Math.min(10, Math.max(1, Number(permissions.webMultitabNumbers) || 1)),
     extensionsEnabled: permissions.extensionsEnabled !== false,
     proxyEnabled: permissions.proxyEnabled !== false,
+    usTimezoneRequired: permissions.usTimezoneRequired !== false,
     customTabs: Array.isArray(permissions.customTabs) ? permissions.customTabs : []
   };
 }
@@ -1648,6 +1654,8 @@ function createDatShell() {
     stopDatSessionWaiting();
     stopDatKeepAlive?.();
     stopDatKeepAlive = null;
+    datHealth?.stop();
+    datHealth = null;
     console.log(
       '[DAT] Closed. Tracker requests blocked this session:',
       getBlockedCount(session.fromPartition(currentPartition))
@@ -1732,6 +1740,48 @@ async function switchToBackupProxy(ses, { assigned, active, network, checkCancel
   return { network: current, parsedProxy: parsed };
 }
 
+/**
+ * The Reset button in the DAT toolbar: close every DAT connection, check the proxy (a dead
+ * one is swapped for a working backup, like Open DAT does), then reload the tabs. Cookies
+ * and storage stay in the partition, so DAT stays signed in.
+ */
+async function resetDatConnection() {
+  if (!datWindowAlive() || !tabManager || !datHealth) {
+    return { ok: false, message: 'DAT is not open.' };
+  }
+  const result = await datHealth.reset(async () => {
+    if (!currentParsedProxy) return { ok: true };
+    const ses = session.fromPartition(currentPartition);
+    invalidateNetworkCheck();
+    const network = await checkDatNetwork(ses, {
+      proxy: currentParsedProxy,
+      datUrl: currentDomain,
+      datTimeoutMs: BACKUP_CHECK_TIMEOUT_MS
+    });
+    if (network.ok) return { ok: true };
+    if (!network.proxyFault) return { ok: false, message: network.message };
+    const switched = await switchToBackupProxy(ses, {
+      assigned: currentAssignedProxy,
+      active: currentActiveProxy,
+      network,
+      checkCancelled: () => {}
+    });
+    if (switched.network.ok && switched.parsedProxy) {
+      currentParsedProxy = switched.parsedProxy;
+      currentActiveProxy = switched.parsedProxy.raw;
+      return { ok: true, switchedProxy: true, message: 'Switched to a working connection.' };
+    }
+    // No backup worked: go back to the proxy DAT was using.
+    await applyProxy(ses, currentActiveProxy);
+    await ses.closeAllConnections().catch(() => {});
+    return { ok: false, message: switched.network.message || network.message };
+  });
+  console.log('[DAT_HEALTH] Reset:', result);
+  reportActivity('dat_reset', { ok: Boolean(result?.ok), switchedProxy: Boolean(result?.switchedProxy) });
+  deviceSync.beatNow().catch(() => {});
+  return result;
+}
+
 /** Prepare the DAT session inside the already-open DAT window, then load DAT. */
 async function openDatWindow({
   domain,
@@ -1791,6 +1841,8 @@ async function openDatWindow({
   }
   let parsedProxy = await applyProxy(ses, activeProxy);
   currentUsingProxy = Boolean(parsedProxy);
+  currentAssignedProxy = proxy || '';
+  currentActiveProxy = activeProxy || '';
 
   // The session already in the partition came from this same server cookie and DAT has
   // been renewing it here: keep it. Re-injecting the uploaded snapshot would replace the
@@ -1856,8 +1908,10 @@ async function openDatWindow({
       checkCancelled
     }));
     currentUsingProxy = Boolean(parsedProxy);
+    if (parsedProxy) currentActiveProxy = parsedProxy.raw;
     mark('proxyFailover');
   }
+  currentParsedProxy = parsedProxy;
   if (!network.ok) throw new Error(network.message);
   checkCancelled();
 
@@ -1896,6 +1950,23 @@ async function openDatWindow({
   stopDatKeepAlive = startDatKeepAlive(datWindow, {
     getActiveWebContents: () => tabManager?.getActiveWebContents() || null,
     getWebContentsIds: () => tabManager?.getWebContentsIds() || []
+  });
+  datHealth?.stop();
+  datHealth = startDatHealth({
+    win: datWindow,
+    getActiveWebContents: () => tabManager?.getActiveWebContents() || null,
+    getWebContentsIds: () => tabManager?.getWebContentsIds() || [],
+    getSession: () => (datWindowAlive() ? session.fromPartition(currentPartition) : null),
+    reloadTabs: () => tabManager?.reloadAllTabs(),
+    // Connection went bad or came back: tell admin now instead of on the next 30s beat
+    // (small changes, like Stable ↔ OK, just ride on the normal beat).
+    onLevelChange: (level) => {
+      const bad = ['slow', 'stuck', 'down'].includes(level);
+      if (bad === lastHealthBeatBad || Date.now() - lastHealthBeatAt < 60000) return;
+      lastHealthBeatBad = bad;
+      lastHealthBeatAt = Date.now();
+      deviceSync.beatNow().catch(() => {});
+    }
   });
 
   // Only DAT stays open; the dashboard is recreated when DAT closes.
@@ -2283,74 +2354,6 @@ ipcMain.handle('report-chrome', async (_event, open) => {
   return true;
 });
 
-ipcMain.handle('send-screen-report', async (_event, payload) => {
-  try {
-    const token = await getToken();
-    const claims = decodeJwtPayload(token) || {};
-    const s = await getStore();
-    let email = '';
-    if (typeof payload?.email === 'string') {
-      email = payload.email.trim();
-      if (email) {
-        await rememberReportEmail(email);
-        syncRemoteCapture();
-      }
-    } else {
-      email = String(claims.email || claims.userEmail || s.get('reportEmail') || '').trim();
-    }
-    return await sendScreenReport({
-      message: payload?.message,
-      user: {
-        email,
-        userId: String(claims.userId || claims.id || claims.sub || '').trim()
-      }
-    });
-  } catch (err) {
-    console.warn('[REPORT]', err.message);
-    return { ok: false, message: 'Could not send the screenshot.' };
-  }
-});
-
-ipcMain.handle('get-report-settings', async () => {
-  const s = await getStore();
-  return {
-    allowRemote: captureAllowed(s),
-    allowLive: liveAllowed(s),
-    email: String(s.get('reportEmail') || '').trim()
-  };
-});
-
-ipcMain.handle('set-report-settings', async (_event, payload) => {
-  const s = await getStore();
-  let emailChanged = false;
-  if (typeof payload?.email === 'string' && payload.email.trim()) {
-    emailChanged = await rememberReportEmail(payload.email);
-  }
-  if (!emailChanged) {
-    const beforeRemote = captureAllowed(s);
-    const beforeLive = liveAllowed(s);
-    if (typeof payload?.allowRemote === 'boolean') {
-      s.set('remoteCaptureSet', true);
-      s.set('remoteCaptureAllowed', payload.allowRemote);
-    }
-    if (typeof payload?.allowLive === 'boolean') {
-      s.set('liveViewSet', true);
-      s.set('liveViewAllowed', payload.allowLive);
-    }
-    const afterRemote = captureAllowed(s);
-    const afterLive = liveAllowed(s);
-    if (afterRemote !== beforeRemote || afterLive !== beforeLive) {
-      reportActivity('settings', { allowRemote: afterRemote, allowLive: afterLive });
-    }
-  }
-  syncRemoteCapture();
-  return {
-    allowRemote: captureAllowed(s),
-    allowLive: liveAllowed(s),
-    email: String(s.get('reportEmail') || '').trim()
-  };
-});
-
 ipcMain.handle('get-current-user', async () => {
   const token = await getToken();
   if (!token) return null;
@@ -2414,6 +2417,26 @@ ipcMain.handle('open-dat', async () => {
   return result;
 });
 
+/**
+ * Gate: the PC must be on a US time zone before opening DAT. DAT only works from the US,
+ * and a non-US PC clock/zone makes login cookies look expired (skew logouts). Throws an
+ * error telling the user to switch their Windows time zone. Admins can turn the gate off
+ * per user (permissions.usTimezoneRequired = false).
+ */
+function enforceUsTimezone(permissions) {
+  if (permissions?.usTimezoneRequired === false) return;
+  const tzCheck = usTimezoneCheck();
+  if (tzCheck.ok) return;
+  const err = new Error(
+    `Your PC time zone is "${tzCheck.timezone}", which is not a US time zone. ` +
+      'Open Windows Settings → Time & language → Date & time, set the time zone to a US ' +
+      'zone (e.g. Eastern/Central/Mountain/Pacific), turn on "Set time automatically", ' +
+      'then press Open DAT again.'
+  );
+  err.code = 'NON_US_TIMEZONE';
+  throw err;
+}
+
 /** Shared Open-DAT flow used by the renderer button and the tray menu. */
 async function openDatFlow() {
   if (opening) {
@@ -2427,22 +2450,6 @@ async function openDatFlow() {
     datWindow.focus();
     refreshTray();
     return { success: true, message: 'DAT already open' };
-  }
-
-  // Gate: the PC must be on a US time zone before opening DAT. DAT only works from the US,
-  // and a non-US PC clock/zone makes login cookies look expired (skew logouts). Tell the
-  // user to switch their Windows time zone to a US one and try again.
-  const tzCheck = usTimezoneCheck();
-  if (!tzCheck.ok) {
-    return {
-      success: false,
-      code: 'NON_US_TIMEZONE',
-      message:
-        `Your PC time zone is "${tzCheck.timezone}", which is not a US time zone. ` +
-        'Open Windows Settings → Time & language → Date & time, set the time zone to a US ' +
-        'zone (e.g. Eastern/Central/Mountain/Pacific), turn on "Set time automatically", ' +
-        'then press Open DAT again.'
-    };
   }
 
   opening = true;
@@ -2482,6 +2489,7 @@ async function openDatFlow() {
     } = await resolveSessionAssets();
     timings.mark('backend');
     if (isCancelled()) throw openCancelled();
+    enforceUsTimezone(user.permissions);
     await openDatWindow({
       domain: user.domain || 'https://one.dat.com/search-loads',
       proxy,
@@ -2517,7 +2525,7 @@ async function openDatFlow() {
     } catch {
       // ignore
     }
-    return { success: false, message: err.message || 'Failed to open DAT' };
+    return { success: false, code: err.code, message: err.message || 'Failed to open DAT' };
   } finally {
     opening = false;
   }
@@ -2609,7 +2617,19 @@ ipcMain.handle('tab:close', async (_e, tabId) => {
   return closed;
 });
 
+// Reset button in the DAT toolbar: fresh connections + reload, DAT stays open and signed in.
+ipcMain.handle('tab:reset', async () => resetDatConnection());
+
+// This app has no support terminal; the dashboard still asks, so it always hears "not active".
+ipcMain.handle('terminal:get-status', () => ({ active: false }));
+
 ipcMain.handle('tab:get-all', async () => tabManager?.getAllTabs?.() || []);
+
+// DAT page zoom from the toolbar: 1 in, -1 out, 0 back to 100%.
+ipcMain.handle('tab:zoom', async (_e, direction) => {
+  if (!tabManager) return null;
+  return tabManager.zoom(Math.sign(Number(direction) || 0));
+});
 
 ipcMain.handle('get-user-proxy', async () => {
   try {
@@ -2918,7 +2938,6 @@ app.whenReady().then(async () => {
   if (!startInTray) createMainWindow();
   createTray();
   startRemoteCapture(readReportProfile, (command) => runRemoteAction(command?.type, command));
-  startSuspicionWatch(readReportProfile);
   startActivityLog(readReportProfile);
 
   try {
@@ -2992,7 +3011,6 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   markDatClosed('quit');
-  stopSuspicionWatch();
   stopRemoteCapture();
   stopDatSessionWatchdog();
   deviceSync.stop();

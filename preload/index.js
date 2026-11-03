@@ -6,9 +6,6 @@ const api = {
   getCurrentUser: () => ipcRenderer.invoke('get-current-user'),
   logout: () => ipcRenderer.invoke('logout'),
   openDat: () => ipcRenderer.invoke('open-dat'),
-  sendScreenReport: (payload) => ipcRenderer.invoke('send-screen-report', payload),
-  getReportSettings: () => ipcRenderer.invoke('get-report-settings'),
-  setReportSettings: (payload) => ipcRenderer.invoke('set-report-settings', payload),
   openCustomTab: (tab) => ipcRenderer.invoke('open-custom-tab', tab),
   getUserProxy: () => ipcRenderer.invoke('get-user-proxy'),
   setUserProxy: (payload) => ipcRenderer.invoke('set-user-proxy', payload),
@@ -40,6 +37,12 @@ const api = {
     const listener = () => callback();
     ipcRenderer.on('toggle-server-panel', listener);
     return () => ipcRenderer.removeListener('toggle-server-panel', listener);
+  },
+  getTerminalStatus: () => ipcRenderer.invoke('terminal:get-status'),
+  onTerminalStatus: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('terminal:status', listener);
+    return () => ipcRenderer.removeListener('terminal:status', listener);
   }
 };
 
@@ -48,6 +51,8 @@ const dslbSession = {
   switchTab: (tabId) => ipcRenderer.invoke('tab:switch', tabId),
   closeTab: (tabId) => ipcRenderer.invoke('tab:close', tabId),
   getAllTabs: () => ipcRenderer.invoke('tab:get-all'),
+  zoom: (direction) => ipcRenderer.invoke('tab:zoom', direction),
+  resetConnection: () => ipcRenderer.invoke('tab:reset'),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
@@ -56,6 +61,11 @@ const dslbSession = {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('tab:update', listener);
     return () => ipcRenderer.removeListener('tab:update', listener);
+  },
+  onHealth: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('dat:health', listener);
+    return () => ipcRenderer.removeListener('dat:health', listener);
   },
   onLoading: (callback) => {
     const listener = (_event, data) => callback(data);

@@ -1,12 +1,39 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
-import ScreenReport from './components/ScreenReport';
 import ProxySettings from './components/ProxySettings';
 import ServerSettings from './components/ServerSettings';
 import Toast from './components/Toast';
 import UpdateRequired from './components/UpdateRequired';
 import { friendlyMessage } from './utils/friendlyMessage';
+
+function TerminalStatus() {
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    window.api
+      ?.getTerminalStatus?.()
+      .then((next) => {
+        if (live) setStatus(next?.active ? next : null);
+      })
+      .catch(() => {});
+    const off = window.api?.onTerminalStatus?.((next) => {
+      setStatus(next?.active ? next : null);
+    });
+    return () => {
+      live = false;
+      if (typeof off === 'function') off();
+    };
+  }, []);
+
+  if (!status) return null;
+  const detail = [status.shell, status.host].filter(Boolean).join(' on ');
+  return (
+    <div>
+    </div>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -186,14 +213,16 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-slate-600">
-        Loading…
+      <div className="min-h-screen flex flex-col">
+        <TerminalStatus />
+        <div className="flex-1 flex items-center justify-center text-slate-600">Loading…</div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen relative">
+      <TerminalStatus />
       {outdated && !updating ? (
         <UpdateRequired
           latestVersion={outdated.latestVersion}
@@ -223,7 +252,6 @@ export default function App() {
             >
               Sign in with another account
             </button>
-            <ScreenReport variant="block" setMessage={showMessage} />
           </div>
         </div>
       ) : (

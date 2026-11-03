@@ -6,6 +6,7 @@ A separate copy of `../datdesk`, changed only where macOS needs it. The Windows 
 
 | Part | Windows (`datdesk`) | Mac (`datdesk-mac`) |
 |---|---|---|
+| Screenshots / terminal-editor watch | yes | removed (no Screen Recording permission needed) |
 | Device key | TPM / Windows key store via PowerShell | P-256 key encrypted with the macOS Keychain (`main/deviceKey.js`), sent as storage `software` |
 | Updates | electron-updater installs automatically | `main/updateManager.js` checks the feed and opens the new `.dmg` in the browser (an unsigned Mac app cannot self-install) |
 | Update / version channel | `datdesk` | `datdesk-mac`, so the Windows "latest version required" gate never blocks Mac users |
@@ -31,7 +32,10 @@ The app is ad-hoc signed, not signed with an Apple Developer ID, so macOS warns 
    If it says the app is "damaged", run this in Terminal once:
    `xattr -cr "/Applications/Dat Desk.app"`
 3. Allow the Keychain prompt with **Always Allow** (it holds the device key and cookies).
-4. For the remote screenshot feature: System Settings → Privacy & Security → Screen Recording → turn on Dat Desk.
+
+No other permission is needed: the Mac app has no screenshots, live view, support terminal or
+"terminal/editor open" watch. TrackingEye still gets presence, the activity log, remote actions
+and hardware details (Mac UUID, serial number, model, CPU, RAM, network addresses).
 
 ## Publish an update
 

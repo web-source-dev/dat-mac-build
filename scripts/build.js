@@ -20,6 +20,8 @@ for (const { src, dest } of dirs) {
   const from = path.resolve(__dirname, '..', src);
   const to = path.resolve(__dirname, '..', dest);
   if (fs.existsSync(from)) {
+    // Start clean so files deleted from the source are not packed into the installer.
+    fs.rmSync(to, { recursive: true, force: true });
     console.log(`Copying ${src} -> ${dest}`);
     copyDir(from, to);
   }

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import logo from '../assets/dat-logo.svg';
-import ScreenReport from './ScreenReport';
 
 export default function Dashboard({ user, onLogout, setMessage }) {
   const [opening, setOpening] = useState(false);
@@ -51,7 +50,6 @@ export default function Dashboard({ user, onLogout, setMessage }) {
       />
 
       <header className="relative z-10 flex items-center justify-end gap-1 px-6 py-5 flex-wrap">
-        <ScreenReport />
         <button
           type="button"
           onClick={onLogout}
